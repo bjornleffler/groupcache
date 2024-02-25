@@ -28,6 +28,7 @@ import (
 
 	"github.com/bjornleffler/groupcache/consistenthash"
 	pb "github.com/bjornleffler/groupcache/groupcachepb"
+	emptypb "github.com/golang/protobuf/ptypes/empty"
 	"github.com/golang/protobuf/proto"
 )
 
@@ -127,7 +128,7 @@ func (p *HTTPPool) Set(peers ...string) {
 	}
 }
 
-func (p *HTTPPool) PickPeer(key string) (ProtoGetter, bool) {
+func (p *HTTPPool) PickPeer(key string) (Peer, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.peers.IsEmpty() {
@@ -228,4 +229,8 @@ func (h *httpGetter) Get(ctx context.Context, in *pb.GetRequest, out *pb.GetResp
 		return fmt.Errorf("decoding response body: %v", err)
 	}
 	return nil
+}
+
+func (h *httpGetter) Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Empty) error {
+	return fmt.Errorf("Not implemented.")
 }

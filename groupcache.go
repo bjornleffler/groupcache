@@ -210,15 +210,19 @@ type flightGroup interface {
 
 // Stats are per-group statistics.
 type Stats struct {
-	Gets           AtomicInt // any Get request, including from peers
-	CacheHits      AtomicInt // either cache was good
-	PeerLoads      AtomicInt // either remote load or remote cache hit (not an error)
-	PeerErrors     AtomicInt
-	Loads          AtomicInt // (gets - cacheHits)
-	LoadsDeduped   AtomicInt // after singleflight
-	LocalLoads     AtomicInt // total good local loads
-	LocalLoadErrs  AtomicInt // total bad local loads
-	ServerRequests AtomicInt // gets that came over the network from peers
+	Gets            AtomicInt // any Get request, including from peers
+	Sets            AtomicInt // any Set (store) request, including from peers
+	CacheHits       AtomicInt // either cache was good
+	PeerLoads       AtomicInt // either remote load or remote cache hit (not an error)
+	PeerStores      AtomicInt // remote store (not an error)
+	PeerErrors      AtomicInt
+	Loads           AtomicInt // (gets - cacheHits)
+	LoadsDeduped    AtomicInt // after singleflight
+	LocalLoads      AtomicInt // total good local loads
+	LocalLoadErrs   AtomicInt // total bad local loads
+	LocalStores     AtomicInt // local store operations
+	LocalStoreErrs  AtomicInt // total local store errors
+	ServerRequests  AtomicInt // gets that came over the network from peers
 }
 
 // Name returns the name of the group.
@@ -328,15 +332,7 @@ func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView
 	return dest.view()
 }
 
-func (g *Group) setLocally(ctx context.Context, key string, value ByteView) error {
-	if g.setter == nil {
-		fmt.Errorf("No setter defined.")
-		return nil
-	}
-	return g.setter.Set(ctx, key, value)
-}
-
-func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (ByteView, error) {
+func (g *Group) getFromPeer(ctx context.Context, peer Peer, key string) (ByteView, error) {
 	req := &pb.GetRequest{
 		Group: &g.name,
 		Key:   &key,
@@ -356,7 +352,37 @@ func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (
 	return value, nil
 }
 
-func (g *Group) setToPeer(ctx context.Context, peer ProtoSetter, key string, value ByteView) error {
+func (g *Group) Set(ctx context.Context, key string, value ByteView) error {
+	g.peersOnce.Do(g.initPeers)
+	g.Stats.Sets.Add(1)
+	if peer, ok := g.peers.PickPeer(key); ok {
+		if err := g.setToPeer(ctx, peer, key, value); err == nil {
+			g.Stats.PeerStores.Add(1)
+			return nil
+		}
+		g.Stats.PeerErrors.Add(1)
+		// TODO(bradfitz): log the peer's error? keep
+		// log of the past few for /groupcachez?  It's
+		// probably boring (normal task movement), so not
+		// worth logging I imagine.
+	}
+	err := g.setLocally(ctx, key, value)
+	if err != nil {
+		g.Stats.LocalStoreErrs.Add(1)
+		return err
+	}
+	return nil
+}
+
+func (g *Group) setLocally(ctx context.Context, key string, value ByteView) error {
+	if g.setter == nil {
+		fmt.Errorf("No setter defined.")
+		return nil
+	}
+	return g.setter.Set(ctx, key, value)
+}
+
+func (g *Group) setToPeer(ctx context.Context, peer Peer, key string, value ByteView) error {
 	req := &pb.SetRequest{
 		Group: &g.name,
 		Key:   &key,

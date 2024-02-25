@@ -33,6 +33,7 @@ import (
 	"github.com/golang/protobuf/proto"
 
 	pb "github.com/bjornleffler/groupcache/groupcachepb"
+	emptypb "github.com/golang/protobuf/ptypes/empty"
 	testpb "github.com/bjornleffler/groupcache/testpb"
 )
 
@@ -333,9 +334,13 @@ func (p *fakePeer) Get(_ context.Context, in *pb.GetRequest, out *pb.GetResponse
 	return nil
 }
 
-type fakePeers []ProtoGetter
+func (p *fakePeer) Set(_ context.Context, in *pb.SetRequest, out *emptypb.Empty) error {
+	return fmt.Errorf("Not implemented.")
+}
 
-func (p fakePeers) PickPeer(key string) (peer ProtoGetter, ok bool) {
+type fakePeers []Peer
+
+func (p fakePeers) PickPeer(key string) (peer Peer, ok bool) {
 	if len(p) == 0 {
 		return
 	}
@@ -350,7 +355,7 @@ func TestPeers(t *testing.T) {
 	peer0 := &fakePeer{}
 	peer1 := &fakePeer{}
 	peer2 := &fakePeer{}
-	peerList := fakePeers([]ProtoGetter{peer0, peer1, peer2, nil})
+	peerList := fakePeers([]Peer{peer0, peer1, peer2, nil})
 	const cacheSize = 0 // disabled
 	localHits := 0
 	getter := func(_ context.Context, key string, dest Sink) error {
