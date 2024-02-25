@@ -22,6 +22,7 @@ import (
 	"context"
 
 	pb "github.com/bjornleffler/groupcache/groupcachepb"
+	emptypb "github.com/golang/protobuf/ptypes/empty"
 )
 
 // Context is an alias to context.Context for backwards compatibility purposes.
@@ -30,6 +31,11 @@ type Context = context.Context
 // ProtoGetter is the interface that must be implemented by a peer.
 type ProtoGetter interface {
 	Get(ctx context.Context, in *pb.GetRequest, out *pb.GetResponse) error
+}
+
+// ProtoSetter is the interface that must be implemented by a peer.
+type ProtoSetter interface {
+	Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Empty) error
 }
 
 // PeerPicker is the interface that must be implemented to locate

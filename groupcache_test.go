@@ -186,6 +186,43 @@ func TestCaching(t *testing.T) {
 	}
 }
 
+func TestSetGetLocally(t *testing.T) {
+	key := t.Name() + "-key"
+	groupName := t.Name() + "-group"
+	value := t.Name() + "-value"
+
+	// Set up a local group, different to other unit tests.
+	storage := make(map[string]string)
+	group := NewGroup(groupName, cacheSize, GetterFunc(func(_ context.Context, key string, dest Sink) error {
+		if value, ok := storage[key]; ok {
+			dest.SetString(value)
+		}
+		return nil
+	}))
+	setter := func(ctx context.Context, key string, value ByteView) error {
+		storage[key] = value.String()
+		return nil
+	}
+	group.RegisterSetter(setter)
+
+	// Value shouldn't exist.
+	var res string
+	ctx := context.TODO()
+	if bv, err := group.getLocally(ctx, key, StringSink(&res)); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else if bv.String() != "" {
+		t.Errorf("Expected empty value. Got %q", bv.String())
+	}
+
+	// Set / get value.
+	group.setLocally(ctx, key, ByteView{s: value})
+	if bv, err := group.getLocally(ctx, key, StringSink(&res)); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else if bv.String() != value {
+		t.Errorf("Expected %q got %q", value, bv.String())
+	}
+}
+
 func TestCacheEviction(t *testing.T) {
 	once.Do(testSetup)
 	testKey := "TestCacheEviction-key"

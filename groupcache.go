@@ -27,12 +27,14 @@ package groupcache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"strconv"
 	"sync"
 	"sync/atomic"
 
 	pb "github.com/bjornleffler/groupcache/groupcachepb"
+	emptypb "github.com/golang/protobuf/ptypes/empty"
 	"github.com/bjornleffler/groupcache/lru"
 	"github.com/bjornleffler/groupcache/singleflight"
 )
@@ -53,6 +55,25 @@ type GetterFunc func(ctx context.Context, key string, dest Sink) error
 
 func (f GetterFunc) Get(ctx context.Context, key string, dest Sink) error {
 	return f(ctx, key, dest)
+}
+
+// A Setter stores data for a key. This is optional and useful when getter
+// functions are "expensive" in latency or other resources.
+type Setter interface {
+	// Set stores the value identified by key.
+	//
+	// The stored data must be unversioned. That is, key must
+	// uniquely describe the loaded data, without an implicit
+	// current time, and without relying on cache expiration
+	// mechanisms.
+	Set(ctx context.Context, key string, value ByteView) error
+}
+
+// A SetterFunc implements Setter with a function.
+type SetterFunc func(ctx context.Context, key string, value ByteView) error
+
+func (f SetterFunc) Set(ctx context.Context, key string, value ByteView) error {
+	return f(ctx, key, value)
 }
 
 var (
@@ -99,6 +120,7 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 	g := &Group{
 		name:       name,
 		getter:     getter,
+		setter:     nil,
 		peers:      peers,
 		cacheBytes: cacheBytes,
 		loadGroup:  &singleflight.Group{},
@@ -108,6 +130,10 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 	}
 	groups[name] = g
 	return g
+}
+
+func (g *Group) RegisterSetter(fn SetterFunc) {
+	g.setter = fn
 }
 
 // newGroupHook, if non-nil, is called right after a new group is created.
@@ -142,6 +168,7 @@ func callInitPeerServer() {
 type Group struct {
 	name       string
 	getter     Getter
+	setter     Setter
 	peersOnce  sync.Once
 	peers      PeerPicker
 	cacheBytes int64 // limit for sum of mainCache and hotCache size
@@ -301,6 +328,14 @@ func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView
 	return dest.view()
 }
 
+func (g *Group) setLocally(ctx context.Context, key string, value ByteView) error {
+	if g.setter == nil {
+		fmt.Errorf("No setter defined.")
+		return nil
+	}
+	return g.setter.Set(ctx, key, value)
+}
+
 func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (ByteView, error) {
 	req := &pb.GetRequest{
 		Group: &g.name,
@@ -319,6 +354,18 @@ func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (
 		g.populateCache(key, value, &g.hotCache)
 	}
 	return value, nil
+}
+
+func (g *Group) setToPeer(ctx context.Context, peer ProtoSetter, key string, value ByteView) error {
+	req := &pb.SetRequest{
+		Group: &g.name,
+		Key:   &key,
+		Value: value.b,
+	}
+	res := &emptypb.Empty{}
+	// Populate hotcache. We will probably read back this value.
+	g.populateCache(key, value, &g.hotCache)
+	return peer.Set(ctx, req, res)
 }
 
 func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
