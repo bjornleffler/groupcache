@@ -32,9 +32,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	pb "github.com/golang/groupcache/groupcachepb"
-	"github.com/golang/groupcache/lru"
-	"github.com/golang/groupcache/singleflight"
+	pb "github.com/bjornleffler/groupcache/groupcachepb"
+	"github.com/bjornleffler/groupcache/lru"
+	"github.com/bjornleffler/groupcache/singleflight"
 )
 
 // A Getter loads data for a key.
@@ -395,6 +395,14 @@ type cache struct {
 	nevict     int64 // number of evictions
 }
 
+// Callback function to call on evictions.
+type EvictCallbackFunction func(string, ByteView)
+var EvictCallback EvictCallbackFunction = nil
+
+func SetEvictCallback(fn EvictCallbackFunction) {
+	EvictCallback = fn
+}
+
 func (c *cache) stats() CacheStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -416,6 +424,9 @@ func (c *cache) add(key string, value ByteView) {
 				val := value.(ByteView)
 				c.nbytes -= int64(len(key.(string))) + int64(val.Len())
 				c.nevict++
+				if EvictCallback != nil {
+					EvictCallback(key.(string), val)
+				}
 			},
 		}
 	}

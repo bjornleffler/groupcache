@@ -32,8 +32,8 @@ import (
 
 	"github.com/golang/protobuf/proto"
 
-	pb "github.com/golang/groupcache/groupcachepb"
-	testpb "github.com/golang/groupcache/testpb"
+	pb "github.com/bjornleffler/groupcache/groupcachepb"
+	testpb "github.com/bjornleffler/groupcache/testpb"
 )
 
 var (
@@ -223,6 +223,62 @@ func TestCacheEviction(t *testing.T) {
 	fills = countFills(getTestKey)
 	if fills != 1 {
 		t.Fatalf("expected 1 cache fill after cache trashing; got %d", fills)
+	}
+}
+
+func TestCacheEvictionWithCallback(t *testing.T) {
+	testKey := "TestCacheEvictionWithCallback-key"
+	once.Do(testSetup)
+
+	// Eviction test setup.
+	evicted := make(map[string]string)
+	evictionCallback := func(key string, bv ByteView) {
+		evicted[key] = bv.String()
+	}
+	SetEvictCallback(evictionCallback)
+
+	getTestKey := func() {
+		var res string
+		for i := 0; i < 10; i++ {
+			if err := stringGroup.Get(dummyCtx, testKey, StringSink(&res)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	fills := countFills(getTestKey)
+	if fills != 1 {
+		t.Fatalf("expected 1 cache fill; got %d", fills)
+	}
+
+	g := stringGroup.(*Group)
+	evict0 := g.mainCache.nevict
+
+	// Trash the cache with other keys.
+	var bytesFlooded int64
+	// cacheSize/len(testKey) is approximate
+	for bytesFlooded < cacheSize+1024 {
+		var res string
+		key := fmt.Sprintf("dummy-key-%d", bytesFlooded)
+		stringGroup.Get(dummyCtx, key, StringSink(&res))
+		bytesFlooded += int64(len(key) + len(res))
+	}
+	evicts := g.mainCache.nevict - evict0
+	if evicts <= 0 {
+		t.Errorf("evicts = %v; want more than 0", evicts)
+	}
+
+	// Test that the key is gone.
+	fills = countFills(getTestKey)
+	if fills != 1 {
+		t.Fatalf("expected 1 cache fill after cache trashing; got %d", fills)
+	}
+
+	// Test that key was evicted and that value was correct.
+	expected := "ECHO:TestCacheEvictionWithCallback-key"
+	if value, ok := evicted[testKey]; !ok {
+		t.Fatalf("expected eviction callback for key: %q", testKey)
+	} else if expected != value {
+		t.Fatalf("Wrong evicted value. Expected %q got %q", expected, value)
 	}
 }
 
