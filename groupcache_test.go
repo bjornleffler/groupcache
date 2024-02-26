@@ -212,15 +212,15 @@ func TestSetGetLocally(t *testing.T) {
 	if bv, err := group.getLocally(ctx, key, StringSink(&res)); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	} else if bv.String() != "" {
-		t.Errorf("Expected empty value. Got %q", bv.String())
+		t.Fatalf("Expected empty value. Got %q", bv.String())
 	}
 
 	// Set / get value.
-	group.setLocally(ctx, key, ByteView{s: value})
+	group.SetLocally(ctx, key, ByteView{s: value})
 	if bv, err := group.getLocally(ctx, key, StringSink(&res)); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	} else if bv.String() != value {
-		t.Errorf("Expected %q got %q", value, bv.String())
+		t.Fatalf("Expected %q got %q", value, bv.String())
 	}
 }
 

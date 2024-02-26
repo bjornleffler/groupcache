@@ -35,12 +35,22 @@ type ByteView struct {
 	s string
 }
 
+// TODO(leffler): Remove. Workaround for compiler problem.
+func MakeByteView(s string) ByteView {
+	return ByteView{s: s}
+}
+
 // Len returns the view's length.
 func (v ByteView) Len() int {
 	if v.b != nil {
 		return len(v.b)
 	}
 	return len(v.s)
+}
+
+// Empty returns true if the wrapped byte array and string are empty.
+func (v ByteView) Empty() bool {
+	return v.Len() == 0
 }
 
 // ByteSlice returns a copy of the data as a byte slice.

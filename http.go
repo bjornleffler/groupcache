@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,7 +33,8 @@ import (
 	"github.com/golang/protobuf/proto"
 )
 
-const defaultBasePath = "/_groupcache/"
+const defaultGetPath = "/_groupcache/"
+const defaultSetPath = "/_set_groupcache/"
 
 const defaultReplicas = 50
 
@@ -54,16 +56,20 @@ type HTTPPool struct {
 	// opts specifies the options.
 	opts HTTPPoolOptions
 
-	mu          sync.Mutex // guards peers and httpGetters
+	mu          sync.Mutex // guards peers and httpPeers
 	peers       *consistenthash.Map
-	httpGetters map[string]*httpGetter // keyed by e.g. "http://10.0.0.2:8008"
+	httpPeers map[string]*httpPeer // keyed by e.g. "http://10.0.0.2:8008"
 }
 
 // HTTPPoolOptions are the configurations of a HTTPPool.
 type HTTPPoolOptions struct {
-	// BasePath specifies the HTTP path that will serve groupcache requests.
+	// GetPath specifies the HTTP path that will serve groupcache get requests.
 	// If blank, it defaults to "/_groupcache/".
-	BasePath string
+	GetPath string
+
+	// SetPath specifies the HTTP path that will serve groupcache set requests.
+	// If blank, it defaults to "/_set_groupcache/".
+	SetPath string
 
 	// Replicas specifies the number of key replicas on the consistent hash.
 	// If blank, it defaults to 50.
@@ -80,7 +86,8 @@ type HTTPPoolOptions struct {
 // for example "http://example.net:8000".
 func NewHTTPPool(self string) *HTTPPool {
 	p := NewHTTPPoolOpts(self, nil)
-	http.Handle(p.opts.BasePath, p)
+	http.Handle(p.opts.GetPath, p)
+	http.Handle(p.opts.SetPath, p)
 	return p
 }
 
@@ -97,13 +104,16 @@ func NewHTTPPoolOpts(self string, o *HTTPPoolOptions) *HTTPPool {
 
 	p := &HTTPPool{
 		self:        self,
-		httpGetters: make(map[string]*httpGetter),
+		httpPeers: make(map[string]*httpPeer),
 	}
 	if o != nil {
 		p.opts = *o
 	}
-	if p.opts.BasePath == "" {
-		p.opts.BasePath = defaultBasePath
+	if p.opts.GetPath == "" {
+		p.opts.GetPath = defaultGetPath
+	}
+	if p.opts.SetPath == "" {
+		p.opts.SetPath = defaultSetPath
 	}
 	if p.opts.Replicas == 0 {
 		p.opts.Replicas = defaultReplicas
@@ -122,9 +132,13 @@ func (p *HTTPPool) Set(peers ...string) {
 	defer p.mu.Unlock()
 	p.peers = consistenthash.New(p.opts.Replicas, p.opts.HashFn)
 	p.peers.Add(peers...)
-	p.httpGetters = make(map[string]*httpGetter, len(peers))
+	p.httpPeers = make(map[string]*httpPeer, len(peers))
 	for _, peer := range peers {
-		p.httpGetters[peer] = &httpGetter{transport: p.Transport, baseURL: peer + p.opts.BasePath}
+		p.httpPeers[peer] = &httpPeer{
+			transport: p.Transport,
+			getURL: peer + p.opts.GetPath,
+			setURL: peer + p.opts.SetPath,
+		}
 	}
 }
 
@@ -135,17 +149,23 @@ func (p *HTTPPool) PickPeer(key string) (Peer, bool) {
 		return nil, false
 	}
 	if peer := p.peers.Get(key); peer != p.self {
-		return p.httpGetters[peer], true
+		return p.httpPeers[peer], true
 	}
 	return nil, false
 }
 
 func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Parse request.
-	if !strings.HasPrefix(r.URL.Path, p.opts.BasePath) {
-		panic("HTTPPool serving unexpected path: " + r.URL.Path)
+	if strings.HasPrefix(r.URL.Path, p.opts.GetPath) {
+		p.serveHttpGet(w, r)
+	} else if strings.HasPrefix(r.URL.Path, p.opts.SetPath) {
+		p.serveHttpSet(w, r)
+	} else {
+		http.Error(w, "Not Found", http.StatusNotFound)
 	}
-	parts := strings.SplitN(r.URL.Path[len(p.opts.BasePath):], "/", 2)
+}
+
+func (p *HTTPPool) serveHttpGet(w http.ResponseWriter, r *http.Request) {
+	parts := strings.SplitN(r.URL.Path[len(p.opts.GetPath):], "/", 2)
 	if len(parts) != 2 {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -174,6 +194,12 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Return "Not found" for empty values.
+	if len(value) == 0 {
+		http.Error(w, "Empty value", http.StatusNotFound)
+		return
+	}
+
 	// Write the value to the response body as a proto message.
 	body, err := proto.Marshal(&pb.GetResponse{Value: value})
 	if err != nil {
@@ -184,19 +210,61 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
-type httpGetter struct {
+func (p *HTTPPool) serveHttpSet(w http.ResponseWriter, r *http.Request) {
+	// Parse request.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		msg := fmt.Sprintf("Failed to read request body: %v", err)
+		log.Print(msg)
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	request := pb.SetRequest{}
+	if err := proto.Unmarshal(body, &request); err != nil {
+		msg := fmt.Sprintf("Failed to decode request: %v", err)
+		log.Printf(msg)
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	groupName := *request.Group
+	key := *request.Key
+	value := ByteView{b: request.Value}
+
+	// Fetch the value for this group/key.
+	group := GetGroup(groupName)
+	if group == nil {
+		http.Error(w, "no such group: "+groupName, http.StatusNotFound)
+		return
+	}
+	var ctx context.Context
+	if p.Context != nil {
+		ctx = p.Context(r)
+	} else {
+		ctx = r.Context()
+	}
+
+	group.Stats.ServerRequests.Add(1)
+	err = group.SetLocally(ctx, key, value)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+type httpPeer struct {
 	transport func(context.Context) http.RoundTripper
-	baseURL   string
+	getURL   string
+	setURL   string
 }
 
 var bufferPool = sync.Pool{
 	New: func() interface{} { return new(bytes.Buffer) },
 }
 
-func (h *httpGetter) Get(ctx context.Context, in *pb.GetRequest, out *pb.GetResponse) error {
+func (h *httpPeer) Get(ctx context.Context, in *pb.GetRequest, out *pb.GetResponse) error {
 	u := fmt.Sprintf(
 		"%v%v/%v",
-		h.baseURL,
+		h.getURL,
 		url.QueryEscape(in.GetGroup()),
 		url.QueryEscape(in.GetKey()),
 	)
@@ -231,6 +299,28 @@ func (h *httpGetter) Get(ctx context.Context, in *pb.GetRequest, out *pb.GetResp
 	return nil
 }
 
-func (h *httpGetter) Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Empty) error {
-	return fmt.Errorf("Not implemented.")
+func (h *httpPeer) Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Empty) error {
+	// Encoded message contains everything.
+	message, err := proto.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", h.setURL, bytes.NewBuffer(message))
+	if err != nil {
+		return err
+	}
+	req = req.WithContext(ctx)
+	tr := http.DefaultTransport
+	if h.transport != nil {
+		tr = h.transport(ctx)
+	}
+	res, err := tr.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned: %v", res.Status)
+	}
+	return nil
 }

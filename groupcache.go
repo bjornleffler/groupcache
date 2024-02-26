@@ -220,8 +220,8 @@ type Stats struct {
 	LoadsDeduped    AtomicInt // after singleflight
 	LocalLoads      AtomicInt // total good local loads
 	LocalLoadErrs   AtomicInt // total bad local loads
-	LocalStores     AtomicInt // local store operations
-	LocalStoreErrs  AtomicInt // total local store errors
+	LocalSets       AtomicInt // local local set operations
+	LocalSetErrs    AtomicInt // total local set errors
 	ServerRequests  AtomicInt // gets that came over the network from peers
 }
 
@@ -353,6 +353,10 @@ func (g *Group) getFromPeer(ctx context.Context, peer Peer, key string) (ByteVie
 }
 
 func (g *Group) Set(ctx context.Context, key string, value ByteView) error {
+	// Ignore empty values.
+	if value.Empty() {
+		return nil
+	}
 	g.peersOnce.Do(g.initPeers)
 	g.Stats.Sets.Add(1)
 	if peer, ok := g.peers.PickPeer(key); ok {
@@ -366,30 +370,40 @@ func (g *Group) Set(ctx context.Context, key string, value ByteView) error {
 		// probably boring (normal task movement), so not
 		// worth logging I imagine.
 	}
-	err := g.setLocally(ctx, key, value)
+	err := g.SetLocally(ctx, key, value)
 	if err != nil {
-		g.Stats.LocalStoreErrs.Add(1)
+		g.Stats.LocalSetErrs.Add(1)
 		return err
 	}
 	return nil
 }
 
-func (g *Group) setLocally(ctx context.Context, key string, value ByteView) error {
+func (g *Group) SetLocally(ctx context.Context, key string, value ByteView) error {
+	// Ignore empty values.
+	if value.Empty() {
+		return nil
+	}
 	if g.setter == nil {
 		fmt.Errorf("No setter defined.")
 		return nil
 	}
+	// Populate hotcache in case the value is immediately read back.
+	g.populateCache(key, value, &g.hotCache)
 	return g.setter.Set(ctx, key, value)
 }
 
 func (g *Group) setToPeer(ctx context.Context, peer Peer, key string, value ByteView) error {
+	// Ignore empty values.
+	if value.Empty() {
+		return nil
+	}
 	req := &pb.SetRequest{
 		Group: &g.name,
 		Key:   &key,
-		Value: value.b,
+		Value: value.ByteSlice(),
 	}
 	res := &emptypb.Empty{}
-	// Populate hotcache. We will probably read back this value.
+	// Populate hotcache in case the value is immediately read back.
 	g.populateCache(key, value, &g.hotCache)
 	return peer.Set(ctx, req, res)
 }
@@ -408,6 +422,10 @@ func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
 
 func (g *Group) populateCache(key string, value ByteView, cache *cache) {
 	if g.cacheBytes <= 0 {
+		return
+	}
+	// Don't cache empty values.
+	if value.Empty() {
 		return
 	}
 	cache.add(key, value)
