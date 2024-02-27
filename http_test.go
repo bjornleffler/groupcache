@@ -38,6 +38,12 @@ var (
 	peerChild = flag.Bool("test_peer_child", false, "True if running as a child process; used by TestHTTPPool")
 )
 
+// UnRegisterPeerPicker allows unit tests to call RegisterPeerPicker() multiple times.
+// Intentionally declared in tests, so it doesn't get included in the main codebase.
+func UnRegisterPeerPicker() {
+	portPicker = nil
+}
+
 func TestHTTPPool(t *testing.T) {
 	if *peerChild {
 		beChildForTestHTTPPool()
@@ -80,6 +86,7 @@ func TestHTTPPool(t *testing.T) {
 	wg.Wait()
 
 	// Use a dummy self address so that we don't handle gets in-process.
+	UnRegisterPeerPicker()
 	p := NewHTTPPool("should-be-ignored")
 	p.Set(addrToURL(childAddr)...)
 
@@ -114,6 +121,7 @@ func testKeys(n int) (keys []string) {
 func beChildForTestHTTPPool() {
 	addrs := strings.Split(*peerAddrs, ",")
 
+	UnRegisterPeerPicker()
 	p := NewHTTPPool("http://" + addrs[*peerIndex])
 	p.Set(addrToURL(addrs)...)
 
