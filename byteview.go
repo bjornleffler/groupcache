@@ -35,9 +35,12 @@ type ByteView struct {
 	s string
 }
 
-// TODO(leffler): Remove. Workaround for compiler problem.
-func MakeByteView(s string) ByteView {
+func MakeByteViewString(s string) ByteView {
 	return ByteView{s: s}
+}
+
+func MakeByteViewByteArray(b []byte) ByteView {
+	return ByteView{b: b}
 }
 
 // Len returns the view's length.
