@@ -56,17 +56,10 @@ type GrpcPool struct {
 	clientOpts []grpc.DialOption
 }
 
-var grpcPoolMade bool
-
 // NewGrpcPool initializes an Grpc pool of peers, and registers itself as a PeerPicker.
 // The self argument should be a valid host:port pair that points to the current server,
 // for example "hostname1:1234".
 func NewGrpcPool(self string, port uint) (*GrpcPool) {
-	if grpcPoolMade {
-		panic("groupcache: NewGrpcPool must be called only once")
-	}
-	grpcPoolMade = true
-
 	p := &GrpcPool{
 		port:      port,
 		self:      self,

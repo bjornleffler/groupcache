@@ -132,6 +132,11 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 	return g
 }
 
+// Unregister unregister a group. Intended for unit tests.
+func UnregisterGroup(name string) {
+	delete(groups, name)
+}
+
 func (g *Group) RegisterSetter(fn SetterFunc) {
 	g.setter = fn
 }
@@ -384,8 +389,7 @@ func (g *Group) SetLocally(ctx context.Context, key string, value ByteView) erro
 		return nil
 	}
 	if g.setter == nil {
-		fmt.Errorf("No setter defined.")
-		return nil
+		return fmt.Errorf("No setter function defined.")
 	}
 	// Populate hotcache in case the value is immediately read back.
 	g.populateCache(key, value, &g.hotCache)
