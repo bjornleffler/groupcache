@@ -76,6 +76,25 @@ func (f SetterFunc) Set(ctx context.Context, key string, value ByteView) error {
 	return f(ctx, key, value)
 }
 
+// A Deleter stores data for a key. This is optional and useful when getter
+// functions are "expensive" in latency or other resources.
+type Deleter interface {
+	// Delete stores the value identified by key.
+	//
+	// The stored data must be unversioned. That is, key must
+	// uniquely describe the loaded data, without an implicit
+	// current time, and without relying on cache expiration
+	// mechanisms.
+	Delete(ctx context.Context, key string) error
+}
+
+// A DeleteFunc implements Delete with a function.
+type DeleteFunc func(ctx context.Context, key string) error
+
+func (f DeleteFunc) Delete(ctx context.Context, key string) error {
+	return f(ctx, key)
+}
+
 var (
 	mu     sync.RWMutex
 	groups = make(map[string]*Group)
@@ -121,6 +140,7 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 		name:       name,
 		getter:     getter,
 		setter:     nil,
+		deleter:    nil,
 		peers:      peers,
 		cacheBytes: cacheBytes,
 		loadGroup:  &singleflight.Group{},
@@ -139,6 +159,10 @@ func UnregisterGroup(name string) {
 
 func (g *Group) RegisterSetter(fn SetterFunc) {
 	g.setter = fn
+}
+
+func (g *Group) RegisterDeleter(fn DeleteFunc) {
+	g.deleter = fn
 }
 
 // newGroupHook, if non-nil, is called right after a new group is created.
@@ -174,6 +198,7 @@ type Group struct {
 	name       string
 	getter     Getter
 	setter     Setter
+	deleter    Deleter
 	peersOnce  sync.Once
 	peers      PeerPicker
 	cacheBytes int64 // limit for sum of mainCache and hotCache size
@@ -217,9 +242,11 @@ type flightGroup interface {
 type Stats struct {
 	Gets            AtomicInt // any Get request, including from peers
 	Sets            AtomicInt // any Set (store) request, including from peers
+	Deletes         AtomicInt // any Delete request, including from peers
 	CacheHits       AtomicInt // either cache was good
 	PeerLoads       AtomicInt // either remote load or remote cache hit (not an error)
 	PeerStores      AtomicInt // remote store (not an error)
+	PeerDeletes     AtomicInt // remote deletes (not an error)
 	PeerErrors      AtomicInt
 	Loads           AtomicInt // (gets - cacheHits)
 	LoadsDeduped    AtomicInt // after singleflight
@@ -227,6 +254,8 @@ type Stats struct {
 	LocalLoadErrs   AtomicInt // total bad local loads
 	LocalSets       AtomicInt // local local set operations
 	LocalSetErrs    AtomicInt // total local set errors
+	LocalDeletes    AtomicInt // local local set operations
+	LocalDeleteErrs AtomicInt // total local set errors
 	ServerRequests  AtomicInt // gets that came over the network from peers
 }
 
@@ -410,6 +439,46 @@ func (g *Group) setToPeer(ctx context.Context, peer Peer, key string, value Byte
 	// Populate hotcache in case the value is immediately read back.
 	g.populateCache(key, value, &g.hotCache)
 	return peer.Set(ctx, req, res)
+}
+
+func (g *Group) Delete(ctx context.Context, key string) error {
+	g.peersOnce.Do(g.initPeers)
+	g.Stats.Deletes.Add(1)
+	if peer, ok := g.peers.PickPeer(key); ok {
+		if err := g.deleteFromPeer(ctx, peer, key); err == nil {
+			g.Stats.PeerDeletes.Add(1)
+			return nil
+		}
+		g.Stats.PeerErrors.Add(1)
+		// TODO(bradfitz): log the peer's error? keep
+		// log of the past few for /groupcachez?  It's
+		// probably boring (normal task movement), so not
+		// worth logging I imagine.
+	}
+	err := g.DeleteLocally(ctx, key)
+	if err != nil {
+		g.Stats.LocalDeleteErrs.Add(1)
+		return err
+	}
+	return nil
+}
+
+func (g *Group) DeleteLocally(ctx context.Context, key string) error {
+	if g.deleter == nil {
+		return fmt.Errorf("No setter function defined.")
+	}
+	// TODO(leffler): Delete from hotcache?
+	return g.deleter.Delete(ctx, key)
+}
+
+func (g *Group) deleteFromPeer(ctx context.Context, peer Peer, key string) error {
+	req := &pb.DeleteRequest{
+		Group: &g.name,
+		Key:   &key,
+	}
+	// TODO(leffler): Delete from hotcache?
+	res := &emptypb.Empty{}
+	return peer.Delete(ctx, req, res)
 }
 
 func (g *Group) lookupCache(key string) (value ByteView, ok bool) {

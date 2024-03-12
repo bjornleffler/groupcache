@@ -40,8 +40,9 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	GroupCache_Get_FullMethodName = "/groupcachepb.GroupCache/Get"
-	GroupCache_Set_FullMethodName = "/groupcachepb.GroupCache/Set"
+	GroupCache_Get_FullMethodName    = "/groupcachepb.GroupCache/Get"
+	GroupCache_Set_FullMethodName    = "/groupcachepb.GroupCache/Set"
+	GroupCache_Delete_FullMethodName = "/groupcachepb.GroupCache/Delete"
 )
 
 // GroupCacheClient is the client API for GroupCache service.
@@ -50,6 +51,7 @@ const (
 type GroupCacheClient interface {
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
 	Set(ctx context.Context, in *SetRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type groupCacheClient struct {
@@ -78,12 +80,22 @@ func (c *groupCacheClient) Set(ctx context.Context, in *SetRequest, opts ...grpc
 	return out, nil
 }
 
+func (c *groupCacheClient) Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, GroupCache_Delete_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GroupCacheServer is the server API for GroupCache service.
 // All implementations should embed UnimplementedGroupCacheServer
 // for forward compatibility
 type GroupCacheServer interface {
 	Get(context.Context, *GetRequest) (*GetResponse, error)
 	Set(context.Context, *SetRequest) (*emptypb.Empty, error)
+	Delete(context.Context, *DeleteRequest) (*emptypb.Empty, error)
 }
 
 // UnimplementedGroupCacheServer should be embedded to have forward compatible implementations.
@@ -95,6 +107,9 @@ func (UnimplementedGroupCacheServer) Get(context.Context, *GetRequest) (*GetResp
 }
 func (UnimplementedGroupCacheServer) Set(context.Context, *SetRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Set not implemented")
+}
+func (UnimplementedGroupCacheServer) Delete(context.Context, *DeleteRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
 }
 
 // UnsafeGroupCacheServer may be embedded to opt out of forward compatibility for this service.
@@ -144,6 +159,24 @@ func _GroupCache_Set_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GroupCache_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GroupCacheServer).Delete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GroupCache_Delete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GroupCacheServer).Delete(ctx, req.(*DeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // GroupCache_ServiceDesc is the grpc.ServiceDesc for GroupCache service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -158,6 +191,10 @@ var GroupCache_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Set",
 			Handler:    _GroupCache_Set_Handler,
+		},
+		{
+			MethodName: "Delete",
+			Handler:    _GroupCache_Delete_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

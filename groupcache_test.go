@@ -187,7 +187,7 @@ func TestCaching(t *testing.T) {
 	}
 }
 
-func TestSetGetLocally(t *testing.T) {
+func TestSetGetDeleteLocally(t *testing.T) {
 	key := t.Name() + "-key"
 	groupName := t.Name() + "-group"
 	value := t.Name() + "-value"
@@ -205,6 +205,11 @@ func TestSetGetLocally(t *testing.T) {
 		return nil
 	}
 	group.RegisterSetter(setter)
+	deleter := func(ctx context.Context, key string) error {
+		delete(storage, key)
+		return nil
+	}
+	group.RegisterDeleter(deleter)
 
 	// Value shouldn't exist.
 	var res string
@@ -221,6 +226,18 @@ func TestSetGetLocally(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	} else if bv.String() != value {
 		t.Fatalf("Expected %q got %q", value, bv.String())
+	}
+
+	// Delete value.
+	if err := group.DeleteLocally(ctx, key); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Value shouldn't exist anymore.
+	if bv, err := group.getLocally(ctx, key, StringSink(&res)); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else if bv.String() != "" {
+		t.Fatalf("Expected empty value. Got %q", bv.String())
 	}
 }
 
@@ -335,6 +352,10 @@ func (p *fakePeer) Get(_ context.Context, in *pb.GetRequest, out *pb.GetResponse
 }
 
 func (p *fakePeer) Set(_ context.Context, in *pb.SetRequest, out *emptypb.Empty) error {
+	return fmt.Errorf("Not implemented.")
+}
+
+func (p *fakePeer) Delete(_ context.Context, in *pb.DeleteRequest, out *emptypb.Empty) error {
 	return fmt.Errorf("Not implemented.")
 }
 

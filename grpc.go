@@ -192,6 +192,30 @@ func (s *GrpcPool) Set(ctx context.Context, in *pb.SetRequest) (out *emptypb.Emp
 	return out, nil
 }
 
+func (s *GrpcPool) Delete(ctx context.Context, in *pb.DeleteRequest) (out *emptypb.Empty, err error) {
+	// log.Printf("(server) GrpcPool::Delete() on %s", s.self)
+	groupName := *in.Group
+	key := *in.Key
+
+	// Fetch the value for this group/key.
+	group := GetGroup(groupName)
+	if group == nil {
+		log.Printf("Group not found: %q", groupName)
+		// TODO(leffler): Return grpc.Error
+		return out, fmt.Errorf("Group not found: %q", groupName)
+	}
+
+	group.Stats.ServerRequests.Add(1)
+	err = group.DeleteLocally(ctx, key)
+	if err != nil {
+		log.Printf("Failed to set value: %v", err)
+		// TODO(leffler): Return grpc.Error
+		return out, err
+	}
+
+	return out, nil
+}
+
 type grpcPeer struct {
 	host string
 	port uint
@@ -240,5 +264,15 @@ func (gp *grpcPeer) Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Emp
 		return fmt.Errorf("No client for grpc peer %s", gp.String())
 	}
 	_, err := gp.client.Set(ctx, in)
+	return err
+}
+
+func (gp *grpcPeer) Delete(ctx context.Context, in *pb.DeleteRequest, out *emptypb.Empty) error {
+	// log.Printf("(client) GrpcPool::Delete() to %s", gp.String())
+	if gp.client == nil {
+		log.Printf("No client for grpc peer %s", gp.String())
+		return fmt.Errorf("No client for grpc peer %s", gp.String())
+	}
+	_, err := gp.client.Delete(ctx, in)
 	return err
 }

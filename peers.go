@@ -32,6 +32,7 @@ type Context = context.Context
 type Peer interface {
 	Get(ctx context.Context, in *pb.GetRequest, out *pb.GetResponse) error
 	Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Empty) error
+	Delete(ctx context.Context, in *pb.DeleteRequest, out *emptypb.Empty) error
 }
 
 // PeerPicker is the interface that must be implemented to locate

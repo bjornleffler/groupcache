@@ -35,6 +35,7 @@ import (
 
 const defaultGetPath = "/_groupcache/"
 const defaultSetPath = "/_set_groupcache/"
+const defaultDeletePath = "/_delete_groupcache/"
 
 const defaultReplicas = 50
 
@@ -70,6 +71,10 @@ type HTTPPoolOptions struct {
 	// SetPath specifies the HTTP path that will serve groupcache set requests.
 	// If blank, it defaults to "/_set_groupcache/".
 	SetPath string
+
+	// SetPath specifies the HTTP path that will serve groupcache delete
+	// requests. If blank, it defaults to "/_delete_groupcache/".
+	DeletePath string
 
 	// Replicas specifies the number of key replicas on the consistent hash.
 	// If blank, it defaults to 50.
@@ -115,6 +120,9 @@ func NewHTTPPoolOpts(self string, o *HTTPPoolOptions) *HTTPPool {
 	if p.opts.SetPath == "" {
 		p.opts.SetPath = defaultSetPath
 	}
+	if p.opts.DeletePath == "" {
+		p.opts.DeletePath = defaultDeletePath
+	}
 	if p.opts.Replicas == 0 {
 		p.opts.Replicas = defaultReplicas
 	}
@@ -138,6 +146,7 @@ func (p *HTTPPool) Set(peers ...string) {
 			transport: p.Transport,
 			getURL: peer + p.opts.GetPath,
 			setURL: peer + p.opts.SetPath,
+			deleteURL: peer + p.opts.DeletePath,
 		}
 	}
 }
@@ -159,6 +168,8 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.serveHttpGet(w, r)
 	} else if strings.HasPrefix(r.URL.Path, p.opts.SetPath) {
 		p.serveHttpSet(w, r)
+	} else if strings.HasPrefix(r.URL.Path, p.opts.DeletePath) {
+		p.serveHttpDelete(w, r)
 	} else {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	}
@@ -251,10 +262,51 @@ func (p *HTTPPool) serveHttpSet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (p *HTTPPool) serveHttpDelete(w http.ResponseWriter, r *http.Request) {
+	// Parse request.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		msg := fmt.Sprintf("Failed to read request body: %v", err)
+		log.Print(msg)
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	request := pb.DeleteRequest{}
+	if err := proto.Unmarshal(body, &request); err != nil {
+		msg := fmt.Sprintf("Failed to decode request: %v", err)
+		log.Printf(msg)
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	groupName := *request.Group
+	key := *request.Key
+
+	// Fetch the value for this group/key.
+	group := GetGroup(groupName)
+	if group == nil {
+		http.Error(w, "no such group: "+groupName, http.StatusNotFound)
+		return
+	}
+	var ctx context.Context
+	if p.Context != nil {
+		ctx = p.Context(r)
+	} else {
+		ctx = r.Context()
+	}
+
+	group.Stats.ServerRequests.Add(1)
+	err = group.DeleteLocally(ctx, key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
 type httpPeer struct {
 	transport func(context.Context) http.RoundTripper
-	getURL   string
-	setURL   string
+	getURL    string
+	setURL    string
+	deleteURL string
 }
 
 var bufferPool = sync.Pool{
@@ -306,6 +358,32 @@ func (h *httpPeer) Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Empt
 		return err
 	}
 	req, err := http.NewRequest("POST", h.setURL, bytes.NewBuffer(message))
+	if err != nil {
+		return err
+	}
+	req = req.WithContext(ctx)
+	tr := http.DefaultTransport
+	if h.transport != nil {
+		tr = h.transport(ctx)
+	}
+	res, err := tr.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned: %v", res.Status)
+	}
+	return nil
+}
+
+func (h *httpPeer) Delete(ctx context.Context, in *pb.DeleteRequest, out *emptypb.Empty) error {
+	// Encoded message contains everything.
+	message, err := proto.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", h.deleteURL, bytes.NewBuffer(message))
 	if err != nil {
 		return err
 	}
