@@ -48,8 +48,8 @@ type GrpcPool struct {
 	// If blank, it defaults to crc32.ChecksumIEEE.
 	HashFn consistenthash.Hash
 	
-	mu          sync.Mutex // guards peers and grpcPeers
-	peers       *consistenthash.Map
+	mu        sync.Mutex // guards peers and grpcPeers
+	peers     *consistenthash.Map
 	grpcPeers map[string]*grpcPeer // keyed by e.g. "hostname2:1234"
 
 	// gRPC options.
@@ -71,6 +71,28 @@ func NewGrpcPool(self string, port uint) (*GrpcPool) {
 	p.peers = consistenthash.New(p.Replicas, p.HashFn)
 	RegisterPeerPicker(func() PeerPicker { return p })
 
+	// TODO(leffler): Add gRPC authentication.
+	// Allow insecure gRPC connections.
+	p.clientOpts = append(p.clientOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+
+	return p
+}
+
+// NewRemoteGrpcPool initializes an Grpc pool for a remote set of peers, and registers itself as a PeerPicker.
+// There is no local server: calls are forwarded to remote servers.
+func NewRemoteGrpcPool() (*GrpcPool) {
+	p := &GrpcPool{
+		port:      0,
+		self:      "",
+		grpcPeers: make(map[string]*grpcPeer),
+	}
+	if p.Replicas == 0 {
+		p.Replicas = defaultReplicas
+	}
+	p.peers = consistenthash.New(p.Replicas, p.HashFn)
+	RegisterPeerPicker(func() PeerPicker { return p })
+
+	// TODO(leffler): Add gRPC authentication.
 	// Allow insecure gRPC connections.
 	p.clientOpts = append(p.clientOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 
@@ -79,7 +101,10 @@ func NewGrpcPool(self string, port uint) (*GrpcPool) {
 
 // StartGrpcServer starts the GRPC server.
 func (p *GrpcPool) StartGrpcServer() error {
-	log.Printf("Starting GRPC server on port %d", p.port)
+	if p.self == "" {
+		return fmt.Errorf("Self hostname not set.")
+	}
+	log.Printf("Starting GRPC server on port %d. Self: %q", p.port, p.self)
 	lis, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", p.port))
 	if err != nil {
 		log.Printf("Failed to listen to port %d: %v", p.port, err)

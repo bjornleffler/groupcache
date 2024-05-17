@@ -20,13 +20,46 @@ package groupcache
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	pb "github.com/bjornleffler/groupcache/groupcachepb"
 )
 
+// TestRemoteGrpc tests that remote grpc pools work as expected.
+func TestRemoteGrpc(t *testing.T) {
+	UnRegisterPeerPicker()
+	pool := NewRemoteGrpcPool()
+	if err := pool.StartGrpcServer(); err == nil {
+		t.Fatal("Expected error.")
+	}
+
+	// Test peer picking logic.
+	peers := []string{"localhost:1111", "localhost:2222"}
+	pool.SetPeers(peers...)
+
+	testCases := map[string]string {
+		"a": peers[1],
+		"d": peers[0],
+	}
+	for key, expected := range testCases {
+		if peer, found := pool.PickPeer(key); peer == nil {
+			t.Fatalf("Unexpected nil peer. key: %q", key)
+		} else if !found {
+			t.Fatalf("No peer found. key: %q", key)
+		} else {
+			p := peer.(*grpcPeer)
+			addr := fmt.Sprintf("%s:%d", p.host, p.port)
+			if addr != expected {
+				t.Fatalf("Expected hashing to peer %q. Got: %q", expected, addr)
+			}
+		}
+	}
+}
+
 // TestGrpcServerGetSet tests server side Get and Set calls.
 func TestGrpcServerGetSet(t *testing.T) {
+	UnRegisterPeerPicker()
 	groupName := t.Name() + "-group"
 	key := t.Name() + "-key"
 	value := t.Name() + "-value"
