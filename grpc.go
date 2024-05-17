@@ -32,7 +32,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// GrpcPool implements PeerPicker for a pool of GRPC peers.
+// GrpcPool implements PeerPicker for a pool of gRPC peers.
 type GrpcPool struct {
 	// Grpc TCP server port.
 	port uint
@@ -56,7 +56,7 @@ type GrpcPool struct {
 	clientOpts []grpc.DialOption
 }
 
-// NewGrpcPool initializes an Grpc pool of peers, and registers itself as a PeerPicker.
+// NewGrpcPool initializes a gRPC pool of peers, and registers itself as a PeerPicker.
 // The self argument should be a valid host:port pair that points to the current server,
 // for example "hostname1:1234".
 func NewGrpcPool(self string, port uint) (*GrpcPool) {
@@ -78,8 +78,8 @@ func NewGrpcPool(self string, port uint) (*GrpcPool) {
 	return p
 }
 
-// NewRemoteGrpcPool initializes an Grpc pool for a remote set of peers, and registers itself as a PeerPicker.
-// There is no local server: calls are forwarded to remote servers.
+// NewRemoteGrpcPool initializes a gRPC pool for a remote set of peers.
+// There is no local server: calls are always forwarded to remote servers.
 func NewRemoteGrpcPool() (*GrpcPool) {
 	p := &GrpcPool{
 		port:      0,
@@ -99,12 +99,36 @@ func NewRemoteGrpcPool() (*GrpcPool) {
 	return p
 }
 
-// StartGrpcServer starts the GRPC server.
+// NewLocalGrpcPool initializes a gRPC pool for local use only.
+// There are no remote peers.
+func NewLocalGrpcPool(port uint) (*GrpcPool) {
+	p := &GrpcPool{
+		port:      port,
+		self:      "localhost",
+		grpcPeers: make(map[string]*grpcPeer),
+	}
+	if p.Replicas == 0 {
+		p.Replicas = defaultReplicas
+	}
+	p.peers = consistenthash.New(p.Replicas, p.HashFn)
+	RegisterPeerPicker(func() PeerPicker { return p })
+
+	// TODO(leffler): Add gRPC authentication.
+	// Allow insecure gRPC connections.
+	p.clientOpts = append(p.clientOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+
+	addr := fmt.Sprintf("localhost:%d", port)
+	p.SetPeers(addr)
+
+	return p
+}
+
+// StartGrpcServer starts the gRPC server.
 func (p *GrpcPool) StartGrpcServer() error {
 	if p.self == "" {
 		return fmt.Errorf("Self hostname not set.")
 	}
-	log.Printf("Starting GRPC server on port %d. Self: %q", p.port, p.self)
+	log.Printf("Starting gRPC server on port %d. Self: %q", p.port, p.self)
 	lis, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", p.port))
 	if err != nil {
 		log.Printf("Failed to listen to port %d: %v", p.port, err)

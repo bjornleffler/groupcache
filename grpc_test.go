@@ -27,7 +27,7 @@ import (
 )
 
 // TestRemoteGrpc tests that remote grpc pools work as expected.
-func TestRemoteGrpc(t *testing.T) {
+func TestGrpcRemote(t *testing.T) {
 	UnRegisterPeerPicker()
 	pool := NewRemoteGrpcPool()
 	if err := pool.StartGrpcServer(); err == nil {
@@ -55,6 +55,17 @@ func TestRemoteGrpc(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestLocalGrpc tests that remote grpc pools work as expected.
+func TestGrpcLocal(t *testing.T) {
+	UnRegisterPeerPicker()
+	pool := NewLocalGrpcPool(10001)
+	if err := pool.StartGrpcServer(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// TODO(leffler): Test get/set.
 }
 
 // TestGrpcServerGetSet tests server side Get and Set calls.
