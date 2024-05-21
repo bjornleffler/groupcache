@@ -188,7 +188,7 @@ func (p *GrpcPool) PickPeer(key string) (Peer, bool) {
 }
 
 func (s *GrpcPool) Get(ctx context.Context, in *pb.GetRequest) (out *pb.GetResponse, err error) {
-	// log.Printf("(server) GrpcPool::Get() on %s", s.self)
+	// log.Printf("(server) GrpcPool::Get() from group %q", *in.Group)
 
 	// Fetch the value for this group/key.
 	groupName := *in.Group
@@ -217,7 +217,7 @@ func (s *GrpcPool) Get(ctx context.Context, in *pb.GetRequest) (out *pb.GetRespo
 }
 
 func (s *GrpcPool) Set(ctx context.Context, in *pb.SetRequest) (out *emptypb.Empty, err error) {
-	// log.Printf("(server) GrpcPool::Set() on %s", s.self)
+	// log.Printf("(server) GrpcPool::Set() to group %s", *in.Group)
 	groupName := *in.Group
 	key := *in.Key
 	value := ByteView{b: in.Value}
@@ -242,7 +242,7 @@ func (s *GrpcPool) Set(ctx context.Context, in *pb.SetRequest) (out *emptypb.Emp
 }
 
 func (s *GrpcPool) Delete(ctx context.Context, in *pb.DeleteRequest) (out *emptypb.Empty, err error) {
-	// log.Printf("(server) GrpcPool::Delete() on %s", s.self)
+	// log.Printf("(server) GrpcPool::Delete() to group %s", *in.Group)
 	groupName := *in.Group
 	key := *in.Key
 
@@ -293,7 +293,7 @@ func (gp *grpcPeer) String() string {
 }
 
 func (gp *grpcPeer) Get(ctx context.Context, in *pb.GetRequest, out *pb.GetResponse) (error) {
-	// log.Printf("(client) GrpcPool::Get() to %s", gp.String())
+	// log.Printf("(client) GrpcPool::Get() from group %s", gp.String())
 	if gp.client == nil {
 		log.Printf("No client for grpc peer %s", gp.String())
 		return fmt.Errorf("No client for grpc peer %s", gp.String())
@@ -307,7 +307,7 @@ func (gp *grpcPeer) Get(ctx context.Context, in *pb.GetRequest, out *pb.GetRespo
 }
 
 func (gp *grpcPeer) Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Empty) error {
-	// log.Printf("(client) GrpcPool::Set() to %s", gp.String())
+	// log.Printf("(client) GrpcPool::Set() to group %s", gp.String())
 	if gp.client == nil {
 		log.Printf("No client for grpc peer %s", gp.String())
 		return fmt.Errorf("No client for grpc peer %s", gp.String())
@@ -317,7 +317,7 @@ func (gp *grpcPeer) Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Emp
 }
 
 func (gp *grpcPeer) Delete(ctx context.Context, in *pb.DeleteRequest, out *emptypb.Empty) error {
-	// log.Printf("(client) GrpcPool::Delete() to %s", gp.String())
+	// log.Printf("(client) GrpcPool::Delete() from group %s", gp.String())
 	if gp.client == nil {
 		log.Printf("No client for grpc peer %s", gp.String())
 		return fmt.Errorf("No client for grpc peer %s", gp.String())
