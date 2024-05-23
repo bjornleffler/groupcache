@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"strings"
 	"strconv"
@@ -53,7 +54,8 @@ type GrpcPool struct {
 	grpcPeers map[string]*grpcPeer // keyed by e.g. "hostname2:1234"
 
 	// gRPC options.
-	clientOpts []grpc.DialOption
+	clientOpts          []grpc.DialOption
+	parallelConnections int
 }
 
 // NewGrpcPool initializes a gRPC pool of peers, and registers itself as a PeerPicker.
@@ -61,9 +63,10 @@ type GrpcPool struct {
 // for example "hostname1:1234".
 func NewGrpcPool(self string, port uint) (*GrpcPool) {
 	p := &GrpcPool{
-		port:      port,
-		self:      self,
-		grpcPeers: make(map[string]*grpcPeer),
+		port:                port,
+		self:                self,
+		grpcPeers:           make(map[string]*grpcPeer),
+		parallelConnections: 1,
 	}
 	if p.Replicas == 0 {
 		p.Replicas = defaultReplicas
@@ -141,6 +144,12 @@ func (p *GrpcPool) StartGrpcServer() error {
 	return nil
 }
 
+func (p *GrpcPool) SetParallelConnections(n int) {
+	if n > 0 {
+		p.parallelConnections = n
+	}
+}
+
 // parseHostPort parses a peer "host:port" pair.
 // Host is a valid IPv4 address or hostname.
 // Port is optional.
@@ -169,7 +178,7 @@ func (p *GrpcPool) SetPeers(peers ...string) {
 	p.grpcPeers = make(map[string]*grpcPeer, len(peers))
 	for _, peer := range peers {
 		if host, port, err := p.parseHostPort(peer); err == nil {
-			p.grpcPeers[peer] = MakeGrpcPeer(host, port)
+			p.grpcPeers[peer] = MakeGrpcPeer(host, port, p.parallelConnections)
 			p.grpcPeers[peer].Dial(p.clientOpts)
 		}
 	}
@@ -265,26 +274,42 @@ func (s *GrpcPool) Delete(ctx context.Context, in *pb.DeleteRequest) (out *empty
 	return out, nil
 }
 
-type grpcPeer struct {
-	host string
-	port uint
-	conn *grpc.ClientConn
+type grpcClient struct {
+	index  int
 	client pb.GroupCacheClient
 }
 
-func MakeGrpcPeer(host string, port uint) *grpcPeer {
-	return &grpcPeer{host: host, port: port}
+type grpcPeer struct {
+	host        string
+	port        uint
+	connections int
+	client      []*grpcClient
 }
 
-func (gp *grpcPeer) Dial(opts []grpc.DialOption) (err error) {
+func MakeGrpcPeer(host string, port uint, connections int) *grpcPeer {
+	// log.Printf("MakeGrpcPeer(host: %s, port: %d, connections: %d)", host, port, connections)
+	return &grpcPeer{
+		host: host,
+		port: port,
+		connections: connections,
+		client: make([]*grpcClient, connections),
+	}
+}
+
+func (gp *grpcPeer) Dial(opts []grpc.DialOption) error {
 	// log.Printf("GrpcPeer::Dial(%s)", gp.String())
 	addr := gp.String()
-	if gp.conn, err = grpc.Dial(addr, opts...); err != nil {
-		// TODO(leffler): Keep trying?
-		log.Printf("Failed to dial peer %q: %v", addr, err)
-		return err
+	for i:=0; i<gp.connections; i++ {
+		if conn, err := grpc.Dial(addr, opts...); err != nil {
+			log.Printf("Failed to dial peer %q: %v", addr, err)
+			return err
+		} else {
+			gp.client[i] = &grpcClient{
+				index: i,
+				client: pb.NewGroupCacheClient(conn),
+			}
+		}
 	}
-	gp.client = pb.NewGroupCacheClient(gp.conn)
 	return nil
 }
 
@@ -292,13 +317,20 @@ func (gp *grpcPeer) String() string {
 	return fmt.Sprintf("%s:%d", gp.host, gp.port)
 }
 
+func (gp *grpcPeer) PickClient() *grpcClient {
+	i := rand.Intn(gp.connections)
+	// log.Printf("Chose client %d", i)
+	return gp.client[i]
+}
+
 func (gp *grpcPeer) Get(ctx context.Context, in *pb.GetRequest, out *pb.GetResponse) (error) {
 	// log.Printf("(client) GrpcPool::Get() from group %s", gp.String())
-	if gp.client == nil {
+	client := gp.PickClient()
+	if client == nil {
 		log.Printf("No client for grpc peer %s", gp.String())
 		return fmt.Errorf("No client for grpc peer %s", gp.String())
 	}
-	result, err := gp.client.Get(ctx, in)
+	result, err := client.client.Get(ctx, in)
 	if result != nil {
 		out.Value = result.Value
 		out.MinuteQps = result.MinuteQps
@@ -308,20 +340,22 @@ func (gp *grpcPeer) Get(ctx context.Context, in *pb.GetRequest, out *pb.GetRespo
 
 func (gp *grpcPeer) Set(ctx context.Context, in *pb.SetRequest, out *emptypb.Empty) error {
 	// log.Printf("(client) GrpcPool::Set() to group %s", gp.String())
-	if gp.client == nil {
+	client := gp.PickClient()
+	if client == nil {
 		log.Printf("No client for grpc peer %s", gp.String())
 		return fmt.Errorf("No client for grpc peer %s", gp.String())
 	}
-	_, err := gp.client.Set(ctx, in)
+	_, err := client.client.Set(ctx, in)
 	return err
 }
 
 func (gp *grpcPeer) Delete(ctx context.Context, in *pb.DeleteRequest, out *emptypb.Empty) error {
 	// log.Printf("(client) GrpcPool::Delete() from group %s", gp.String())
-	if gp.client == nil {
+	client := gp.PickClient()
+	if client == nil {
 		log.Printf("No client for grpc peer %s", gp.String())
 		return fmt.Errorf("No client for grpc peer %s", gp.String())
 	}
-	_, err := gp.client.Delete(ctx, in)
+	_, err := client.client.Delete(ctx, in)
 	return err
 }

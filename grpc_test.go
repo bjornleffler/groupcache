@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	pb "github.com/bjornleffler/groupcache/groupcachepb"
 )
@@ -57,7 +58,7 @@ func TestGrpcRemote(t *testing.T) {
 	}
 }
 
-// TestLocalGrpc tests that remote grpc pools work as expected.
+// TestLocalGrpc tests that local grpc pools work as expected.
 func TestGrpcLocal(t *testing.T) {
 	UnRegisterPeerPicker()
 	pool := NewLocalGrpcPool(10001)
@@ -123,5 +124,51 @@ func TestGrpcServerGetSet(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	} else if string(out.Value) != value {
 		t.Fatalf("Expected %q Got %q", value, string(out.Value))
+	}
+}
+
+// TestGrpcServerParallelConnections tests parallel (client) connections.
+func TestGrpcParallelConnections(t *testing.T) {
+	UnRegisterPeerPicker()
+	groupName := t.Name() + "-group"
+	key := t.Name() + "-key"
+
+	// Set up a local group, different to other unit tests.
+	storage := make(map[string]string)
+	group := NewGroup(groupName, cacheSize, GetterFunc(func(_ context.Context, key string, dest Sink) error {
+		if value, ok := storage[key]; ok {
+			dest.SetString(value)
+		}
+		return nil
+	}))
+	setter := func(ctx context.Context, key string, value ByteView) error {
+		storage[key] = value.String()
+		return nil
+	}
+	group.RegisterSetter(setter)
+
+	// Start server and set up gRPC pool with parallel connections.
+	port := uint(1235)
+	peers := []string{"localhost:1235"}
+	pool := NewGrpcPool("hostname", port)
+	pool.SetParallelConnections(4)
+	if err := pool.StartGrpcServer(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	pool.SetPeers(peers...)
+
+	// Send lots of requests. Requests might deadlock, so we cancel them out at 100 ms.
+	ctx, _ := context.WithTimeout(context.TODO(), 100*time.Millisecond)
+	getReq := &pb.GetRequest{
+		Group: &groupName,
+		Key: &key,
+	}
+	for i:=0 ; i<10; i++ {
+		if out, err := pool.Get(ctx, getReq); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		} else if string(out.Value) != "" {
+			t.Fatalf("Expected empty value. Got %q", string(out.Value))
+		}
 	}
 }
